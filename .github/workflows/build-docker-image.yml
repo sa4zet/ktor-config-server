@@ -1,0 +1,27 @@
+name: Build and push docker image
+
+on:
+  release:
+    branches: [ master ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_CLI_EXPERIMENTAL: enabled
+    steps:
+      - uses: actions/checkout@v2
+      - name: enable experimental
+        run: >
+          echo '{ "cgroup-parent": "/actions_job", "experimental": true }'| sudo tee /etc/docker/daemon.json
+      - name: restart docker
+        run: >
+          sudo systemctl restart docker
+      - name: Login to DockerHub Registry
+        run: >
+          echo ${{ secrets.DOCKERHUB_PASSWORD }} | docker login -u ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+      - name: docker build
+        run: >
+          docker build --squash --tag sa4zet/ktor-config-server --tag sa4zet/ktor-config-server:$(date +"%Y.%m.%d.%H.%M.%S") .
+      - name: docker push
+        run: >
+          docker push sa4zet/ktor-config-server
