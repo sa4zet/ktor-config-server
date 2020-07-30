@@ -6,25 +6,13 @@ import com.typesafe.config.ConfigFactory
 import io.ktor.application.*
 import io.ktor.auth.*
 import io.ktor.features.*
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpMethod
-import io.ktor.http.HttpStatusCode
-import io.ktor.http.content.resource
-import io.ktor.http.content.resources
-import io.ktor.http.content.static
-import io.ktor.http.content.staticBasePackage
-import io.ktor.request.httpMethod
-import io.ktor.request.receive
-import io.ktor.response.respond
-import io.ktor.response.respondText
-import io.ktor.routing.Routing
-import io.ktor.routing.get
-import io.ktor.server.jetty.EngineMain
-import io.ktor.util.InternalAPI
-import io.ktor.util.KtorExperimentalAPI
-import io.ktor.util.decodeBase64Bytes
-import io.ktor.util.getDigestFunction
+import io.ktor.http.*
+import io.ktor.http.content.*
+import io.ktor.request.*
+import io.ktor.response.*
+import io.ktor.routing.*
+import io.ktor.server.jetty.*
+import io.ktor.util.*
 import java.io.File
 import java.util.*
 import kotlin.system.exitProcess
@@ -35,23 +23,23 @@ import kotlin.time.toDuration
 data class CallInfo(
   val userName: String,
   val remoteHost: String,
-  val config: String,
-  val configPath: String,
+  val configFileName: String,
+  val configSubPath: String,
   val method: String,
-  val hocon: String,
-  val inJson: Boolean,
-  val prettyPrint: Boolean,
-  val resolve: Boolean
+  val parentDir: String,
+  val inRaw: Boolean,
+  val prettyPrint: Boolean
 )
-
-class ForbiddenException(override val message: String) : kotlin.Exception(message)
 
 val contentTypeHocon = ContentType("application", "hocon")
 val salt: String = System.getenv("config_server_basic_auth_salt") ?: ""
 
 @KtorExperimentalAPI
 val digestFunction = getDigestFunction("SHA-512") { salt }
-var extraConfig: Config = ConfigFactory.empty()
+var extraConfig: Config = ConfigFactory.parseFile(File(System.getenv("config_server_config"))).resolve()
+
+val git = getGitRepository()
+
 
 @KtorExperimentalAPI
 fun main(args: Array<String>) {
@@ -59,25 +47,22 @@ fun main(args: Array<String>) {
     System.err.println("You have to set the 'config_server_basic_auth_salt' environment variable!")
     exitProcess(1)
   }
-  if (args.isEmpty() || (args.first() != "digest" && !args.first().startsWith("-config="))) {
-    System.err.println("You have to add a digest command or a -config=YOUR_CFG_FILE command line argument!")
-    exitProcess(1)
-  }
-  if (args.first() == "digest") {
-    var pwd: String?
-    while (true) {
-      print("Enter a not empty password: ")
-      pwd = readLine()
-      if (pwd == null) {
-        println("\nBye!")
-        return
+  if (args.isNotEmpty()) {
+    if (args.first() == "digest") {
+      var pwd: String?
+      while (true) {
+        print("Enter a not empty password: ")
+        pwd = readLine()
+        if (pwd == null) {
+          println("\nBye!")
+          return
+        }
+        if (pwd.isBlank()) continue
+        else println(String(Base64.getEncoder().encode(digestFunction.invoke(pwd))))
       }
-      if (pwd.isBlank()) continue
-      else println(String(Base64.getEncoder().encode(digestFunction.invoke(pwd))))
     }
   }
-  extraConfig = ConfigFactory.parseFile(File(args.first().substring(8))).resolve()
-  EngineMain.main(emptyArray())
+  EngineMain.main(args)
 }
 
 @InternalAPI
@@ -113,9 +98,6 @@ fun Application.module() {
     exception<BadRequestException> {
       call.respond(HttpStatusCode.BadRequest)
     }
-    exception<ForbiddenException> {
-      call.respond(HttpStatusCode.Forbidden, it.message)
-    }
     exception<Throwable> {
       application.log.error("ouch :(", it)
       call.respond(HttpStatusCode.InternalServerError)
@@ -130,12 +112,14 @@ fun Application.module() {
   }
   install(Routing) {
     trace { application.log.trace(it.buildText()) }
+    get("/health_check") {
+      call.respondText("ok", ContentType.Text.Plain)
+    }
     authenticate("basic-auth") {
       get("/cfg/{path...}") {
         val callInfo = getCallInfo(call)
         call.respondText(
-          getValue(callInfo)
-          , if (callInfo.inJson) ContentType.Application.Json else contentTypeHocon
+          getValue(callInfo), if (callInfo.inRaw) contentTypeHocon else ContentType.Application.Json
         )
       }
     }
@@ -147,40 +131,40 @@ fun Application.module() {
   }
 }
 
-fun getValue(callInfo: CallInfo): String {
-  var cfg = parseConfigFile(callInfo.config, false)
-  if (callInfo.resolve) cfg = cfg.resolve()
-  if (callInfo.configPath.isNotEmpty()) {
-    if (!cfg.hasPath(callInfo.configPath)) throw NotFoundException()
-    val value = cfg.getAnyRef(callInfo.configPath)
+private fun getValue(callInfo: CallInfo): String {
+  var cfg = parseConfigFile(callInfo)
+  if (!callInfo.inRaw) cfg = cfg.resolve()
+  if (callInfo.configSubPath.isNotEmpty()) {
+    if (!cfg.hasPath(callInfo.configSubPath)) throw NotFoundException()
+    val value = cfg.getAnyRef(callInfo.configSubPath)
     return if (value is HashMap<*, *>) {
-      renderConfig(cfg.getObject(callInfo.configPath), callInfo.inJson, callInfo.prettyPrint)
+      renderConfig(cfg.getObject(callInfo.configSubPath), callInfo.inRaw, callInfo.prettyPrint)
     } else {
       value.toString()
     }
   }
-  return renderConfig(cfg, callInfo.inJson, callInfo.prettyPrint)
+  return renderConfig(cfg, callInfo.inRaw, callInfo.prettyPrint)
 }
 
-fun parseConfigFile(fileName: String, createIfNotExist: Boolean): Config {
-  return ConfigFactory.parseFile(gitGetConfigFile(fileName, createIfNotExist))
+private fun parseConfigFile(callInfo: CallInfo): Config {
+  return ConfigFactory.parseFile(gitGetConfigFile(parentDir = callInfo.parentDir, fileName = callInfo.configFileName))
 }
 
-suspend fun getCallInfo(call: ApplicationCall): CallInfo {
+private fun getCallInfo(call: ApplicationCall): CallInfo {
   val principal: UserIdPrincipal? = call.authentication.principal()
   val path = call.parameters.getAll("path")!!
   if (path.isEmpty()) throw BadRequestException("")
   val callInfo = CallInfo(
     userName = principal!!.name,
     remoteHost = call.request.local.remoteHost,
-    config = path.first(),
-    configPath = path.drop(1).joinToString("."),
+    parentDir = path[0],
+    configFileName = path[1],
+    configSubPath = path.drop(2).joinToString("."),
     method = call.request.httpMethod.value,
-    hocon = call.receive(),
-    inJson = call.request.queryParameters.contains("inJson"),
-    prettyPrint = call.request.queryParameters.contains("prettyPrint"),
-    resolve = call.request.queryParameters.contains("resolve")
+    inRaw = call.request.queryParameters.contains("inRaw"),
+    prettyPrint = call.request.queryParameters.contains("prettyPrint")
   )
-  call.application.log.info("${callInfo.userName} tried to ${callInfo.method} ${callInfo.config}{${callInfo.configPath}} from ${callInfo.remoteHost}")
+  call.application.log.info("${callInfo.userName} tried to ${callInfo.method} ${callInfo.configFileName}{${callInfo.configSubPath}} from ${callInfo.remoteHost}")
   return callInfo
 }
+

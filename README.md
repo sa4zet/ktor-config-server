@@ -8,8 +8,12 @@
 
 ## The config_server_basic_auth_salt environment variable
 
-You have to set that environment variable when you generating user password hash-es or running the application.
-It is safer way than store your salt in you configuration file.
+You have to set that environment variable when you generate user password hash-es or running the application.
+It is a safer way than store your salt in your configuration file.
+
+## The config_server_config environment variable
+
+You have to set that environment variable to pint of your custom configuration file.
 
 ## Generate user password hashes
 
@@ -33,27 +37,32 @@ Bye!
 
 ## Configuration
 ```
-git {
-  //  remote {url = "ssh://remote-server/remote-git-path"}
-  //  remote {url = "git@github.com/lightbend/config"}
-  remote {url = "file:///tmp/config-example/remote/"} # config remote git repository
-  local {dir = "/tmp/configurations"} # config local clone directory
-}
-
 auth {
   basic {
     users = [
       {
         userName = "read only user name", # basic auth username
         userHash = "GENERATED HASH", # generated basic auth password hash
-        permission = "r" # read-only permission
-      },
-      {
-        userName = "read/write user name", # basic auth username
-        userHash = "GENERATED HASH", # generated basic auth password hash
-        permission = "rw" # read/write permission
       }
     ]
+  }
+}
+
+git {
+  local {dir = "/tmp/configurations"}
+  remote {
+    url = "git@github.com:USER/REPO.git"
+    host = "github.com"
+    hostKeys = [
+      "AAAAB3NzaC1yc2EAAAABIwAAAQEAq2A7hRGmdnm9tUDbO9IDSwBK6TbQa+PXYPCPy6rbTrTtw7PHkccKrpp0yVhp5HdEIcKr6pLlVDBfOLX9QUsyCOV0wzfjIJNlGEYsdlLJizHhbn2mUjvSAHQqZETYP81eFzLQNnPHt4EVVUh7VfDESU84KezmD5QlWpXLmvU31/yMf+Se8xhHTvKSCZIFImWwoG6mbUoWf9nzpIoaSjB+weqqUUmpaaasXVal72J+UX2B+2RPW3RcT0eOzQgqlJL3RKrTJvdsjE3JEAvGq3lGHSZXy28G3skua2SmVi/w4yCE6gbODqnTWlg7+wC604ydGXA8VJiS5ap43JXiUFFAaQ=="
+    ]
+    privateKey = """
+      -----BEGIN RSA PRIVATE KEY-----
+      ...
+      ...
+      ...
+      -----END RSA PRIVATE KEY-----
+    """
   }
 }
 ```
@@ -62,11 +71,11 @@ auth {
 
 ```
 docker run \
---env="config_server_basic_auth_salt=## YOUR SALT ##" \
---mount="type=bind,readonly,source=## YOUR SSH CONFIG ON HOST ##,destination=/home/config-server/.ssh/" \
+--env="config_server_basic_auth_salt=kaki" \
+--env="config_server_config=/app.conf" \
 --mount="type=bind,readonly,source=## YOUR CONFIG ON HOST ##,destination=/app.conf" \
 --publish="127.0.0.1:80:5454/tcp" \
-sa4zet/ktor-config-server -config=/app.conf
+sa4zet/ktor-config-server
 ```
 
 ## Config remote git repository
