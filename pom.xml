@@ -146,6 +146,12 @@
       <version>${jgit.version}</version>
     </dependency>
 
+    <dependency>
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit.ssh.jsch</artifactId>
+      <version>${jgit.version}</version>
+    </dependency>
+
     <!-- TEST -->
 
     <!-- https://mvnrepository.com/artifact/org.junit.jupiter/junit-jupiter-api -->
